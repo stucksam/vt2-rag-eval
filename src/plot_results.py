@@ -76,7 +76,6 @@ def _plot(file: str):
     axs[0].axvline(mean, color='r', linestyle='dashed', linewidth=1, label=f"mean {round(mean, 2)}")
     axs[0].legend(loc="upper left")
 
-
     hist_scores, mean, median = get_values("context_recall")
     axs[1].hist(hist_scores, bins=20, color='#6488ea')
     axs[1].set_title('Context Recall')

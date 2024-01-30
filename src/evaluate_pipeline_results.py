@@ -66,21 +66,21 @@ def is_not_answered(_entry) -> bool:
             _entry["answer"].lower().startswith("the documents do not provide"))
 
 
-def generate_retrieval_test_set():
-    for entry in original_dataset:
+def generate_retrieval_test_set(dataset: list[dict]):
+    for entry in dataset:
         yield parse_evaluation_entries(entry)
 
 
-def generate_unanswered_test_set():
-    for entry in original_dataset:
+def generate_unanswered_test_set(dataset: list[dict]):
+    for entry in dataset:
         if is_not_answered(entry) and ("scores" not in entry or "context_precision" not in entry["scores"]
                                        or "context_recall" not in entry["scores"]
                                        or "context_relevancy" not in entry["scores"]):
             yield parse_evaluation_entries(entry)
 
 
-def generate_applied_context_test_set():
-    for entry in original_dataset:
+def generate_applied_context_test_set(dataset: list[dict]):
+    for entry in dataset:
         if is_not_answered(entry):
             continue
         if "applied_contexts" not in entry or entry["applied_contexts"] == []:
@@ -89,22 +89,22 @@ def generate_applied_context_test_set():
         yield parse_applied_contexts_entries(entry)
 
 
-def generate_answers_test_set():
-    for entry in original_dataset:
+def generate_answers_test_set(dataset: list[dict]):
+    for entry in dataset:
         if is_not_answered(entry):
             continue
         yield parse_evaluation_entries(entry)
 
 
-def calc_avg_scores(results: list[Result]) -> dict:
-    sum_scores = {
+def generate_metrics_store():
+    return {
         "context_precision": [],
         "context_recall": [],
         "context_relevancy": [],
         "context_accuracy": [],
-        "applied_context_precision": [],
-        "applied_context_recall": [],
-        "applied_context_relevancy": [],
+        # "applied_context_precision": [],
+        # "applied_context_recall": [],
+        # "applied_context_relevancy": [],
         "bert_recall": [],
         "bert_precision": [],
         "bert_f1": [],
@@ -113,6 +113,10 @@ def calc_avg_scores(results: list[Result]) -> dict:
         "answer_similarity": [],
         "answer_correctness": [],
     }
+
+
+def calc_avg_scores(results: list[Result]) -> dict:
+    sum_scores = generate_metrics_store()
     for result in results:
         for i, _entry in enumerate(result.dataset):
             for (k, v) in result.scores[i].items():
@@ -131,44 +135,26 @@ def retrieve_original_entry(content: list[dict], _entry: dict) -> tuple[dict, in
     return {}, -1
 
 
-def save_ragas_results(results: list[Result], file: str) -> None:
-    global original_dataset
+def save_ragas_results(results: list[Result], file: str, dataset: list[dict]) -> None:
     avg_scores = calc_avg_scores(results)
     print(f"Avg Scores: {avg_scores}")
     for result in results:
         for i, entry in enumerate(result.dataset):
-            orig_entry, index = retrieve_original_entry(original_dataset, entry)
+            orig_entry, index = retrieve_original_entry(dataset, entry)
             if "scores" not in orig_entry or isinstance(orig_entry["scores"], str):
                 orig_entry["scores"] = {}
 
             for score, value in result.scores[i].items():
                 orig_entry["scores"][score] = value
-            original_dataset[index] = orig_entry
+            dataset[index] = orig_entry
 
-    with open(f"{EVALUATION_FOLDER}/{file}", "w+", encoding="utf-8") as f:
-        json.dump(original_dataset, f)
+    with open(file, "w+", encoding="utf-8") as f:
+        json.dump(dataset, f)
 
 
-def calculate_mean_and_std(file: str) -> tuple[dict, dict]:
-    global original_dataset
-    print(file)
-    sum_scores = {
-        "context_precision": [],
-        "context_recall": [],
-        "context_relevancy": [],
-        "context_accuracy": [],
-        "applied_context_precision": [],
-        "applied_context_recall": [],
-        "applied_context_relevancy": [],
-        "bert_recall": [],
-        "bert_precision": [],
-        "bert_f1": [],
-        "faithfulness": [],
-        "answer_relevancy": [],
-        "answer_similarity": [],
-        "answer_correctness": [],
-    }
-    for _entry in original_dataset:
+def calculate_mean_and_std(dataset: list[dict]) -> tuple[dict, dict]:
+    sum_scores = generate_metrics_store()
+    for _entry in dataset:
         if is_not_answered(_entry):
             continue
         if "scores" not in _entry or isinstance(_entry["scores"], str):
@@ -182,19 +168,19 @@ def calculate_mean_and_std(file: str) -> tuple[dict, dict]:
                       for (key, value) in sum_scores.items()
                       if len(value) > 0}
 
+    print("Values are: Mean, Std, Median, N_Samples")
     for key, value in sum_scores_res.items():
         print(f"{key}: {value}")
     print(" ")
     return sum_scores, sum_scores_res
 
 
-def execute_metrics_evaluation(data: datasets, batch_size: int, metrics: list[Metric], failure_filename: str) \
+def execute_metrics_evaluation(data: datasets, batch_size: int, metrics: list[Metric], failure_filename: str, dataset: list[dict]) \
         -> list[Result]:
     num_entries = data.shape[0]
-    failure_path = f"{EVALUATION_FOLDER}/{failure_filename}"
-    if not os.path.isfile(failure_path):
-        with open(failure_path, "w", encoding="utf-8"):
-            print("Created failure file: " + failure_path)
+    if not os.path.isfile(failure_filename):
+        with open(failure_filename, "w", encoding="utf-8"):
+            print("Created failure file: " + failure_filename)
 
     collected_results = []
     for i in range(math.ceil(num_entries / batch_size)):
@@ -211,10 +197,10 @@ def execute_metrics_evaluation(data: datasets, batch_size: int, metrics: list[Me
             )
             collected_results.append(result)
         except Exception as e:
-            save_ragas_results(collected_results, failure_filename.replace("ragas_failure_", "rag_cos_"))
+            save_ragas_results(collected_results, failure_filename.replace("_failed_entries.json", ".json"), dataset)
             print("Exception thrown as: " + str(e))
 
-            with open(failure_path, "r", encoding="utf-8") as fr:
+            with open(failure_filename, "r", encoding="utf-8") as fr:
                 try:
                     content = json.loads(fr.read())
                 except json.JSONDecodeError:
@@ -223,61 +209,46 @@ def execute_metrics_evaluation(data: datasets, batch_size: int, metrics: list[Me
                     for j in range(len(subset)):
                         content.append(data[batch_size * i + j])
 
-            with open(failure_path, "w", encoding="utf-8") as fw:
+            with open(failure_filename, "w", encoding="utf-8") as fw:
                 json.dump(content, fw)
     return collected_results
 
 
-def evaluate_rag_answer_similarity_with_ragas(file: str) -> None:
+def evaluate_rag_answer_similarity_with_ragas(file: str, dataset: list[dict]) -> list[dict]:
     batch_size = 5
-    # ds = datasets.Dataset.from_generator(generate_answers_test_set, gen_kwargs={"file": file})
-    ds = datasets.Dataset.from_generator(generate_answers_test_set)
+    ds = datasets.Dataset.from_generator(generate_answers_test_set, gen_kwargs={"dataset": dataset})
     results = execute_metrics_evaluation(ds, batch_size=batch_size, metrics=[
         custom_answer_sim_model()
-    ], failure_filename=file.replace("rag_cos_", "ragas_failure_"))
-    save_ragas_results(results, file)
+    ], failure_filename=file.replace(".json", "_failed_entries.json"), dataset=dataset)
+    save_ragas_results(results, file, dataset)
+    return dataset
 
 
-def evaluate_rag_relevancy_with_ragas(file: str) -> None:
-    if "1024" in file:
-        batch_size = 1
-    else:
-        batch_size = 2
-    ds = datasets.Dataset.from_generator(generate_retrieval_test_set)
-    results = execute_metrics_evaluation(ds, batch_size=batch_size, metrics=[
-        context_relevancy
-    ], failure_filename=file.replace("rag_cos_", "ragas_failure_").replace("ragas_eval_rag_answer_eval_",
-                                                                           "ragas_failure_"))
-    save_ragas_results(results, file)
-
-
-def evaluate_rag_retrieval_with_ragas(file: str, batch_size: int = 1) -> None:
-    if "128" in file:
-        batch_size = 3
-    ds = datasets.Dataset.from_generator(generate_unanswered_test_set)
+def evaluate_rag_retrieval_with_ragas(file: str, dataset: list[dict], batch_size: int = 3) -> list[dict]:
+    ds = datasets.Dataset.from_generator(generate_unanswered_test_set, gen_kwargs={"dataset": dataset})
     results = execute_metrics_evaluation(ds, batch_size=batch_size, metrics=[
         context_precision,
-        context_recall
-    ], failure_filename=file.replace("rag_cos_", "ragas_failure_").replace("ragas_eval_rag_answer_eval_",
-                                                                           "ragas_failure_"))
-    save_ragas_results(results, file)
+        context_recall,
+        context_relevancy
+    ], failure_filename=file.replace(".json", "_failed_entries.json"), dataset=dataset)
+    save_ragas_results(results, file, dataset)
+    return dataset
 
 
-def evaluate_rag_answers_with_ragas(file: str, batch_size: int = 1) -> None:
-    ds = datasets.Dataset.from_generator(generate_answers_test_set)
+def evaluate_rag_answers_with_ragas(file: str, dataset: list[dict], batch_size: int = 3) -> list[dict]:
+    ds = datasets.Dataset.from_generator(generate_answers_test_set, gen_kwargs={"dataset": dataset})
     results = execute_metrics_evaluation(ds, batch_size=batch_size, metrics=[
         faithfulness,
         custom_answer_rel_model(),
         custom_answer_sim_model(),
         custom_answer_corr_model()
-    ], failure_filename=file.replace("rag_cos_", "ragas_failure_").replace("ragas_eval_rag_answer_eval_",
-                                                                           "ragas_failure_"))
-    save_ragas_results(results, file)
+    ], failure_filename=file.replace(".json", "_failed_entries.json"), dataset=dataset)
+    save_ragas_results(results, file, dataset)
+    return dataset
 
 
-def evaluate_rag_complete_with_ragas(file: str, batch_size: int = 3) -> None:
-    batch_size = 1
-    ds = datasets.Dataset.from_generator(generate_answers_test_set)
+def evaluate_rag_complete_with_ragas(file: str, dataset: list[dict], batch_size: int = 3) -> list[dict]:
+    ds = datasets.Dataset.from_generator(generate_answers_test_set, gen_kwargs={"dataset": dataset})
     results = execute_metrics_evaluation(ds, batch_size=batch_size, metrics=[
         context_precision,
         context_recall,
@@ -286,15 +257,15 @@ def evaluate_rag_complete_with_ragas(file: str, batch_size: int = 3) -> None:
         custom_answer_rel_model(),
         custom_answer_corr_model(),
         custom_answer_sim_model()
-    ], failure_filename=file.replace("rag_cos_", "ragas_failure_"))
-    save_ragas_results(results, file)
+    ], failure_filename=file.replace(".json", "_failed_entries.json"), dataset=dataset)
+    save_ragas_results(results, file, dataset)
+    return dataset
 
 
-def evaluate_rag_with_traditional(file: str) -> None:
-    global original_dataset
+def evaluate_rag_with_traditional(dataset: list[dict]) -> list[dict]:
     bertscore = evaluate.load("bertscore")
 
-    for i, entry in enumerate(original_dataset):
+    for i, entry in enumerate(dataset):
         retrieved_contexts = entry["contexts"]
         source_contexts = entry["meta"]["source_context"].replace(".  ", ". ").lower().strip().split(". ")
         matches = 0
@@ -302,7 +273,6 @@ def evaluate_rag_with_traditional(file: str) -> None:
             retrieved_context = retrieved_context["content"].replace(".  ", ". ").lower().strip()
             if any(sentence in retrieved_context for sentence in source_contexts):
                 matches += 1
-                # print([sentence for sentence in source_contexts if sentence in retrieved_context])
         if "scores" not in entry or isinstance(entry["scores"], str):
             entry["scores"] = {}
 
@@ -322,39 +292,38 @@ def evaluate_rag_with_traditional(file: str) -> None:
             entry["scores"]["bert_precision"] = bert_results["recall"][0]
             entry["scores"]["bert_f1"] = bert_results["f1"][0]
 
-        original_dataset[i] = entry
+        dataset[i] = entry
 
-    with open(f"{EVALUATION_FOLDER}/{file}", "w+", encoding="utf-8") as f:
-        json.dump(original_dataset, f)
+    return dataset
 
 
-def retry_failed_evals(file: str):
-    def make_dataset(file_content_fail, file_content_orig):
-        yielded_entries = []
-        for _entry in file_content_fail:
-            orig_entry, _ = retrieve_original_entry(file_content_orig, _entry)
-            if "context_relevancy" in orig_entry["scores"] and orig_entry["scores"]["context_relevancy"] > 0.0:
-                continue
-            for y_entry in yielded_entries:
-                if _entry["question"] == y_entry["question"]:
-                    continue
-            yielded_entries.append(_entry)
-            yield _entry
-
-    with open(f"{EVALUATION_FOLDER}/ragas_eval_failure_subsets_ctrelevancy_{file.split('rag_answer_eval_')[1]}", "r",
-              encoding="utf-8") as f:
-        failed = json.loads(f.read())
-    with open(f"{EVALUATION_FOLDER}/{file}", "r", encoding="utf-8") as f:
-        orig = json.loads(f.read())
-
-    batch_size = 1
-    ds = datasets.Dataset.from_generator(make_dataset,
-                                         gen_kwargs={"file_content_fail": failed, "file_content_orig": orig})
-    results = execute_metrics_evaluation(ds, batch_size=batch_size, metrics=[
-        context_relevancy
-    ], failure_filename=file.split("rag_answer_eval_")[1]
-                                         )
-    save_ragas_results(results, file)
+# def retry_failed_evals(file: str):
+#     def make_dataset(file_content_fail, file_content_orig):
+#         yielded_entries = []
+#         for _entry in file_content_fail:
+#             orig_entry, _ = retrieve_original_entry(file_content_orig, _entry)
+#             if "context_relevancy" in orig_entry["scores"] and orig_entry["scores"]["context_relevancy"] > 0.0:
+#                 continue
+#             for y_entry in yielded_entries:
+#                 if _entry["question"] == y_entry["question"]:
+#                     continue
+#             yielded_entries.append(_entry)
+#             yield _entry
+#
+#     with open(f"{EVALUATION_FOLDER}/ragas_eval_failure_subsets_ctrelevancy_{file.split('rag_answer_eval_')[1]}", "r",
+#               encoding="utf-8") as f:
+#         failed = json.loads(f.read())
+#     with open(f"{EVALUATION_FOLDER}/{file}", "r", encoding="utf-8") as f:
+#         orig = json.loads(f.read())
+#
+#     batch_size = 1
+#     ds = datasets.Dataset.from_generator(make_dataset,
+#                                          gen_kwargs={"file_content_fail": failed, "file_content_orig": orig})
+#     results = execute_metrics_evaluation(ds, batch_size=batch_size, metrics=[
+#         context_relevancy
+#     ], failure_filename=file.split("rag_answer_eval_")[1]
+#                                          )
+#     save_ragas_results(results, file)
 
 
 def compare_population_support(_files: list[str]):
@@ -416,8 +385,4 @@ if __name__ == "__main__":
     for _file in files:
         with open(f"{EVALUATION_FOLDER}/{_file}", "r", encoding="utf-8") as f:
             original_dataset = json.loads(f.read())
-        evaluate_rag_with_traditional(_file)
-
-    {'Q_G2_36', 'Q_G1_77', 'Q_G2_9', 'Q_G1_4', 'Q_G1_25', 'Q_G1_9', 'Q_G2_33', 'Q_G2_18', 'Q_G2_8', 'Q_G2_12', 'Q_R1_8',
-     'Q_R1_11', 'Q_G1_24', 'Q_G2_20'}
-    {'Q_G1_86', 'Q_G1_77', 'Q_G1_4', 'Q_G1_25', 'Q_G2_12', 'Q_G2_30', 'Q_G2_33', 'Q_G1_9'}
+        evaluate_rag_with_traditional(original_dataset)
